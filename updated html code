@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Store Performance Filter</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f4f6f8;
+      padding: 40px 20px;
+      max-width: 900px;
+      margin: auto;
+      color: #333;
+    }
+
+    h1 {
+      text-align: center;
+      color: #2c3e50;
+    }
+
+    .form-section {
+      background: #fff;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+      margin-bottom: 30px;
+    }
+
+    input[type="file"],
+    input[type="text"],
+    input[type="number"],
+    button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 10px;
+      margin-bottom: 15px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 16px;
+      box-sizing: border-box;
+    }
+
+    input:focus,
+    button:focus {
+      outline: none;
+      border-color: #3498db;
+      box-shadow: 0 0 5px rgba(52,152,219,0.5);
+    }
+
+    button {
+      background-color: #3498db;
+      color: #fff;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background-color 0.3s ease;
+    }
+
+    button:hover {
+      background-color: #2980b9;
+    }
+
+    #output .card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-left: 5px solid #3498db;
+      padding: 16px;
+      margin-bottom: 15px;
+      border-radius: 6px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+      transition: transform 0.2s;
+    }
+
+    #output .card:hover {
+      transform: translateY(-2px);
+    }
+
+    #output p {
+      margin: 8px 0;
+      line-height: 1.5;
+    }
+
+    #output p strong {
+      color: #2c3e50;
+    }
+
+    .no-results {
+      background: #fff3cd;
+      color: #856404;
+      padding: 15px;
+      border-radius: 6px;
+      border: 1px solid #ffeeba;
+      margin-top: 20px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Store Performance Filter</h1>
+
+  <div class="form-section">
+    <input type="file" id="upload" accept=".xlsx, .xls">
+    <input type="text" id="month" placeholder="Enter months (e.g. Apr'24 May'24 Jun'24)">
+    <input type="number" id="minAchievement" placeholder="Min Achievement %">
+    <input type="number" id="minGrowth" placeholder="Min Growth %">
+    <button onclick="filterData()">Filter</button>
+  </div>
+
+  <div id="output"></div>
+
+  <script>
+    let allResults = [];
+
+    function normalize(s) {
+      return String(s).trim().toLowerCase().replace(/\s+/g, '').replace("\u200b", "");
+    }
+
+    function normalizeMonth(input) {
+      const monthNames = {
+        jan: "jan", feb: "feb", mar: "mar", apr: "apr",
+        may: "may", jun: "jun", jul: "jul", aug: "aug",
+        sep: "sep", oct: "oct", nov: "nov", dec: "dec"
+      };
+
+      const regex = /([a-zA-Z]+)[\s'-]?(\d{2,4})/;
+      const match = input.toLowerCase().match(regex);
+      if (!match) return normalize(input); // fallback
+
+      let [_, monthStr, yearStr] = match;
+      monthStr = monthStr.slice(0, 3); // first 3 letters
+
+      const mon = monthNames[monthStr];
+      if (!mon) return normalize(input);
+
+      const year = yearStr.length === 4 ? yearStr.slice(2) : yearStr;
+      return `${mon}'${year}`;
+    }
+
+    document.getElementById('upload').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+
+      reader.onload = function(event) {
+        const data = new Uint8Array(event.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+
+        const cySheet = XLSX.utils.sheet_to_json(workbook.Sheets['CY']);
+        const pySheet = XLSX.utils.sheet_to_json(workbook.Sheets['PY']);
+        const budgetSheet = XLSX.utils.sheet_to_json(workbook.Sheets['Budget']);
+
+        const cyData = cySheet.map(d => ({
+          month: normalizeMonth(d.Month),
+          store: normalize(d["Store Code"]),
+          cy_nsv: Number(d["Sum of NSV"])
+        }));
+
+        const pyData = pySheet.map(d => ({
+          month: normalizeMonth(d.Month),
+          store: normalize(d["New Store Code"]),
+          py_nsv: Number(d["Sum of NSV"])
+        }));
+
+        const budgetData = budgetSheet.map(d => ({
+          month: normalizeMonth(d.Month),
+          store: normalize(d["New store Code"]),
+          target: Number(d["Sum of Target"])
+        }));
+
+        const monthMap = Object.fromEntries(
+          cyData.map(d => {
+            const match = d.month.match(/^([a-z]+)'(\d{2})$/);
+            if (!match) return [d.month, d.month]; // fallback if not matched
+            const [_, monthPart, yearPart] = match;
+            const prevYear = String(Number(yearPart) - 1).padStart(2, '0');
+            return [d.month, `${monthPart}'${prevYear}`];
+          })
+        );
+
+        allResults = cyData.map(cy => {
+          const py = pyData.find(p => p.month === monthMap[cy.month] && p.store === cy.store);
+          const budget = budgetData.find(b => b.month === cy.month && b.store === cy.store);
+          if (!py || !budget) return null;
+
+          const achievement = (cy.cy_nsv / budget.target) * 100;
+          const growth = ((cy.cy_nsv - py.py_nsv) / py.py_nsv) * 100;
+
+          return {
+            month: cy.month,
+            store: cy.store,
+            achievement,
+            growth
+          };
+        }).filter(Boolean);
+
+        alert('Spreadsheet processed. Now enter filter values.');
+      };
+
+      reader.readAsArrayBuffer(file);
+    });
+
+    function filterData() {
+      const monthInput = document.getElementById('month').value;
+      const months = monthInput.split(/[\s,]+/).map(normalizeMonth);
+      const minAch = parseFloat(document.getElementById('minAchievement').value) || 0;
+      const minGrowth = parseFloat(document.getElementById('minGrowth').value) || 0;
+
+      const filtered = allResults.filter(d =>
+        months.includes(d.month) &&
+        d.achievement >= minAch &&
+        d.growth >= minGrowth
+      );
+
+      const output = document.getElementById('output');
+      output.innerHTML = '';
+
+      if (filtered.length === 0) {
+        output.innerHTML = '<div class="no-results">No results match the criteria.</div>';
+        return;
+      }
+
+      filtered.forEach(store => {
+        const div = document.createElement('div');
+        div.className = 'card';
+        div.innerHTML = `
+          <p><strong>Month:</strong> ${store.month}</p>
+          <p><strong>Store:</strong> ${store.store}</p>
+          <p><strong>Achievement %:</strong> ${store.achievement.toFixed(2)}%</p>
+          <p><strong>Growth %:</strong> ${store.growth.toFixed(2)}%</p>
+        `;
+        output.appendChild(div);
+      });
+    }
+  </script>
+</body>
+</html>
